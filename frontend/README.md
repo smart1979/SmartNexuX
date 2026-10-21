@@ -13,11 +13,14 @@ docker compose logs --tail 100 frontend
 ```
 
 Open <http://localhost:3000>. The frontend container runs the Next.js development
-server and mounts the source directory for live reload. Phase 4.1 provides the
+server from the `frontend` Compose service. Phase 4.1 provides the
 dashboard shell and theme. Phase 4.2 connects OIDC sign-in, model selection,
 SSE chat, owner-scoped document upload/search, Agent skills, and conversation
 history stored in the `nexux-data` SQLite volume. The dashboard interface is
 presented in Traditional Chinese (`zh-Hant`).
+
+The Compose service passes `NEXT_PUBLIC_API_BASE_URL` from the root `.env` so
+the browser can reach the API. Node.js is not required on the host.
 
 ## OIDC setup
 

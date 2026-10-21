@@ -1,9 +1,11 @@
 import asyncio
 import hashlib
 import hmac
+import ipaddress
 import os
 import secrets
 from dataclasses import dataclass
+from urllib.parse import urlparse
 
 from fastapi import HTTPException, Request, status
 
@@ -109,3 +111,30 @@ def allowed_frontend_origins() -> tuple[str, ...]:
         "http://localhost:8000,http://127.0.0.1:8000",
     )
     return tuple(origin.strip().rstrip("/") for origin in value.split(",") if origin.strip())
+
+
+def is_allowed_frontend_origin(origin: str | None, configured_origins: tuple[str, ...]) -> bool:
+    if origin is None:
+        return False
+    normalized_origin = origin.strip().rstrip("/")
+    if normalized_origin in configured_origins:
+        return True
+
+    try:
+        parsed = urlparse(normalized_origin)
+    except ValueError:
+        return False
+
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        return False
+
+    host = parsed.hostname.lower()
+    if host in {"localhost", "127.0.0.1", "::1", "0.0.0.0"}:
+        return True
+
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+
+    return ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_unspecified

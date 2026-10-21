@@ -659,6 +659,60 @@ class ConversationStore:
                 (document_id, owner_id),
             )
 
+    def replace_imported_document(
+        self,
+        owner_id: str,
+        old_source_document_id: str,
+        new_source_document_id: str,
+        old_document_id: str,
+        new_document_id: str,
+        source_name: str,
+        chunks_indexed: int,
+        uploaded_at: str,
+        is_shared: bool = False,
+    ) -> None:
+        with self._connection() as connection:
+            connection.execute(
+                """
+                DELETE FROM imported_documents
+                WHERE owner_id = ? AND source_document_id = ?
+                    AND document_id = ?
+                """,
+                (owner_id, old_source_document_id, old_document_id),
+            )
+            cursor = connection.execute(
+                "DELETE FROM documents WHERE document_id = ? AND owner_id = ?",
+                (old_document_id, owner_id),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("Imported document to replace was not found")
+            connection.execute(
+                """
+                INSERT INTO documents
+                    (
+                        document_id, owner_id, source_name, chunks_indexed,
+                        uploaded_at, is_shared
+                    )
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    new_document_id,
+                    owner_id,
+                    source_name,
+                    chunks_indexed,
+                    uploaded_at,
+                    int(is_shared),
+                ),
+            )
+            connection.execute(
+                """
+                INSERT INTO imported_documents
+                    (owner_id, source_document_id, document_id)
+                VALUES (?, ?, ?)
+                """,
+                (owner_id, new_source_document_id, new_document_id),
+            )
+
 
 def _message_record(row: sqlite3.Row) -> dict[str, Any]:
     metadata = json.loads(row["metadata_json"])

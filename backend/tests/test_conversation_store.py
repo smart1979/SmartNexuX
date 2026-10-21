@@ -106,6 +106,58 @@ class ConversationStoreTests(unittest.TestCase):
         self.assertEqual(first_documents["shared.pdf"]["uploaded_at"], shared["uploaded_at"])
         self.assertEqual(set(second_documents), {"shared.pdf"})
 
+    def test_replacing_imported_document_updates_mapping_atomically(self) -> None:
+        owner_id = str(self.first_user["id"])
+        source_id = "d74ae210-a60e-4a19-afd0-adde08a8f135"
+        old_id = "d74ae210-a60e-4a19-afd0-adde08a8f136"
+        new_id = "d74ae210-a60e-4a19-afd0-adde08a8f137"
+        self.store.register_imported_document(
+            owner_id,
+            source_id,
+            old_id,
+            "old.pdf",
+            2,
+            "2026-01-01T00:00:00+00:00",
+        )
+
+        self.store.replace_imported_document(
+            owner_id,
+            source_id,
+            source_id,
+            old_id,
+            new_id,
+            "new.pdf",
+            3,
+            "2026-02-01T00:00:00+00:00",
+            is_shared=True,
+        )
+
+        self.assertEqual(
+            self.store.imported_document_ids(owner_id),
+            {source_id: new_id},
+        )
+        documents = self.store.list_documents(owner_id)
+        self.assertEqual(len(documents), 1)
+        self.assertEqual(documents[0]["document_id"], new_id)
+        self.assertEqual(documents[0]["source_name"], "new.pdf")
+        self.assertTrue(documents[0]["is_shared"])
+
+        with self.assertRaises(ValueError):
+            self.store.replace_imported_document(
+                owner_id,
+                source_id,
+                source_id,
+                old_id,
+                "d74ae210-a60e-4a19-afd0-adde08a8f138",
+                "invalid.pdf",
+                1,
+                "2026-03-01T00:00:00+00:00",
+            )
+        self.assertEqual(
+            self.store.imported_document_ids(owner_id),
+            {source_id: new_id},
+        )
+
     def test_legacy_users_table_gets_password_hash_column(self) -> None:
         legacy_path = Path(self.temporary_directory.name) / "legacy.sqlite3"
         with closing(sqlite3.connect(legacy_path)) as connection:

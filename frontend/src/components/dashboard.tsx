@@ -3,6 +3,7 @@
 import Image from "next/image";
 import {
   Activity,
+  Archive,
   ArrowUpRight,
   BookOpen,
   Bot,
@@ -11,6 +12,7 @@ import {
   ChevronRight,
   CircleHelp,
   Clock3,
+  Download,
   FileText,
   FolderOpen,
   History,
@@ -49,12 +51,15 @@ import {
   ConversationSummary,
   DocumentSummary,
   createConversation,
+  deleteConversation,
+  exportRagArchive,
   getChatModels,
   getConversation,
   getConversations,
   getCurrentUser,
   getDocuments,
   getSkills,
+  importRagArchive,
   runAgent,
   signIn,
   signUp,
@@ -87,7 +92,9 @@ function errorText(error: unknown): string {
     "The current password is invalid.": "目前密碼不正確。",
     "The new password must be different from the current password.": "新密碼不能與目前密碼相同。",
     "An account with this email already exists": "此電子郵件已註冊，請直接登入。",
-    "The request origin is not allowed": "此請求來源未獲允許，請重新載入頁面後再試。",
+    "The request origin is not allowed":
+      "此請求來源未獲允許。請確認你正在使用 localhost 或本機 LAN IP（例如 10.x.x.x）開啟頁面，且後端已允許該來源。",
+    "Failed to fetch": "無法連線到 NexuX 服務，請確認後端已啟動且網址正確。",
     "Conversation not found": "找不到這段對話，或你沒有存取權限。",
     "One or more attached documents were not found":
       "找不到其中一份附件，或你沒有存取權限。",
@@ -120,6 +127,22 @@ function detailSummary(detail: ConversationDetail): ConversationSummary {
 function formatBytes(size: number): string {
   if (size < 1024 * 1024) return `${Math.max(1, Math.round(size / 1024))} KB`;
   return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function createClientId(): string {
+  if (typeof crypto.randomUUID === "function") return crypto.randomUUID();
+
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+  return [
+    hex.slice(0, 8),
+    hex.slice(8, 12),
+    hex.slice(12, 16),
+    hex.slice(16, 20),
+    hex.slice(20),
+  ].join("-");
 }
 
 function providerLabel(provider: ChatModelOption["provider"]): string {
@@ -192,6 +215,12 @@ export default function Dashboard() {
   const [isSending, setIsSending] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [shareLibraryUploads, setShareLibraryUploads] = useState(false);
+  const [ragSyncing, setRagSyncing] = useState<"export" | "import" | null>(null);
+  const [updateImportedDocuments, setUpdateImportedDocuments] = useState(true);
+  const [ragSyncMessage, setRagSyncMessage] = useState<{
+    type: "error" | "success";
+    text: string;
+  } | null>(null);
   const [uploadProgress, setUploadProgress] = useState<{
     completed: number;
     total: number;
@@ -203,6 +232,7 @@ export default function Dashboard() {
   const [agentCalls, setAgentCalls] = useState<AgentToolCall[]>([]);
   const chatFileInput = useRef<HTMLInputElement>(null);
   const libraryFileInput = useRef<HTMLInputElement>(null);
+  const ragArchiveInput = useRef<HTMLInputElement>(null);
   const composerInput = useRef<HTMLTextAreaElement>(null);
   const knowledgeSearchInput = useRef<HTMLInputElement>(null);
   const composerAbort = useRef<AbortController | null>(null);
@@ -380,7 +410,7 @@ export default function Dashboard() {
     setPendingAttachments((current) => [
       ...current,
       ...incoming.map((file) => ({
-        key: crypto.randomUUID(),
+        key: createClientId(),
         file,
         previewUrl: file.type.startsWith("image/")
           ? URL.createObjectURL(file)
@@ -433,6 +463,56 @@ export default function Dashboard() {
     }
   };
 
+  const exportKnowledgeBase = async () => {
+    setRagSyncing("export");
+    setRagSyncMessage(null);
+    try {
+      const archive = await exportRagArchive();
+      const archiveUrl = URL.createObjectURL(archive);
+      const downloadLink = document.createElement("a");
+      downloadLink.href = archiveUrl;
+      downloadLink.download = `NexuX-RAG-${new Date()
+        .toISOString()
+        .replace(/[:.]/g, "-")}.zip`;
+      document.body.append(downloadLink);
+      downloadLink.click();
+      downloadLink.remove();
+      window.setTimeout(() => URL.revokeObjectURL(archiveUrl), 60_000);
+      setRagSyncMessage({
+        type: "success",
+        text: "RAG 備份已下載，請妥善保存 ZIP 檔案。",
+      });
+    } catch (error) {
+      setRagSyncMessage({ type: "error", text: errorText(error) });
+    } finally {
+      setRagSyncing(null);
+    }
+  };
+
+  const importKnowledgeBase = async (file: File) => {
+    setRagSyncing("import");
+    setRagSyncMessage(null);
+    try {
+      const result = await importRagArchive(file, updateImportedDocuments);
+      try {
+        setDocuments(await getDocuments());
+        setRagSyncMessage({
+          type: "success",
+          text: `匯入完成：新增 ${result.imported}、更新 ${result.updated}、略過 ${result.skipped} 份文件。`,
+        });
+      } catch (error) {
+        setRagSyncMessage({
+          type: "error",
+          text: `匯入已完成（新增 ${result.imported}、更新 ${result.updated}、略過 ${result.skipped} 份），但無法重新載入知識庫清單：${errorText(error)}`,
+        });
+      }
+    } catch (error) {
+      setRagSyncMessage({ type: "error", text: errorText(error) });
+    } finally {
+      setRagSyncing(null);
+    }
+  };
+
   const refreshConversation = async (conversationId: string) => {
     const detail = await getConversation(conversationId);
     setMessages(detail.messages);
@@ -442,6 +522,34 @@ export default function Dashboard() {
       ...current.filter((conversation) => conversation.id !== detail.id),
     ]);
     return detail;
+  };
+
+  const removeConversation = async (conversationId: string) => {
+    const target = conversations.find((session) => session.id === conversationId);
+    if (!target) return;
+
+    const confirmed = window.confirm(
+      `確定要刪除「${conversationTitle(target.title)}」嗎？\n這將移除該段對話紀錄。`,
+    );
+    if (!confirmed) return;
+
+    try {
+      await deleteConversation(conversationId);
+      const remaining = conversations.filter((session) => session.id !== conversationId);
+      setConversations(remaining);
+
+      if (activeSession === conversationId) {
+        const nextConversation = remaining[0] ?? null;
+        setActiveSession(nextConversation ? nextConversation.id : null);
+        setMessages([]);
+        setAgentCalls([]);
+        if (nextConversation) {
+          await selectConversation(nextConversation.id);
+        }
+      }
+    } catch (error) {
+      setErrorMessage(errorText(error));
+    }
   };
 
   const sendMessage = async () => {
@@ -491,7 +599,7 @@ export default function Dashboard() {
       setMessages((current) => [
         ...current,
         {
-          id: `pending-${crypto.randomUUID()}`,
+          id: `pending-${createClientId()}`,
           role: "user",
           content: prompt,
           usage: null,
@@ -882,17 +990,30 @@ export default function Dashboard() {
         </div>
         <div className="session-list">
           {conversations.map((session) => (
-            <button
-              aria-current={activeSession === session.id ? "page" : undefined}
-              className={`session-item${activeSession === session.id ? " session-active" : ""}`}
-              disabled={isSending}
-              key={session.id}
-              onClick={() => void selectConversation(session.id)}
-              type="button"
-            >
-              <MessageSquarePlus size={15} />
-              <span>{conversationTitle(session.title)}</span>
-            </button>
+            <div className="session-row" key={session.id}>
+              <button
+                aria-current={activeSession === session.id ? "page" : undefined}
+                className={`session-item${activeSession === session.id ? " session-active" : ""}`}
+                disabled={isSending}
+                onClick={() => void selectConversation(session.id)}
+                type="button"
+              >
+                <MessageSquarePlus size={15} />
+                <span>{conversationTitle(session.title)}</span>
+              </button>
+              <button
+                aria-label={`刪除對話 ${conversationTitle(session.title)}`}
+                className="session-delete"
+                onClick={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  void removeConversation(session.id);
+                }}
+                type="button"
+              >
+                <X size={12} />
+              </button>
+            </div>
           ))}
           {conversations.length === 0 && (
             <span className="session-empty">目前沒有已儲存的對話</span>
@@ -1406,6 +1527,67 @@ export default function Dashboard() {
               />
               <span>分享給這台 NexuX 的所有帳號</span>
             </label>
+            <div aria-label="RAG 備份與匯入" className="rag-sync-actions">
+              <button
+                disabled={documents.length === 0 || isUploading || ragSyncing !== null}
+                onClick={() => void exportKnowledgeBase()}
+                type="button"
+              >
+                {ragSyncing === "export" ? (
+                  <LoaderCircle className="spin" size={14} />
+                ) : (
+                  <Download size={14} />
+                )}
+                {ragSyncing === "export" ? "備份中…" : "備份 RAG"}
+              </button>
+              <button
+                disabled={isUploading || ragSyncing !== null}
+                onClick={() => ragArchiveInput.current?.click()}
+                type="button"
+              >
+                {ragSyncing === "import" ? (
+                  <LoaderCircle className="spin" size={14} />
+                ) : (
+                  <Archive size={14} />
+                )}
+                {ragSyncing === "import" ? "匯入中…" : "匯入 ZIP"}
+              </button>
+              <input
+                accept=".zip,application/zip"
+                className="visually-hidden"
+                disabled={isUploading || ragSyncing !== null}
+                onChange={(event) => {
+                  const file = event.currentTarget.files?.[0];
+                  if (file) void importKnowledgeBase(file);
+                  event.currentTarget.value = "";
+                }}
+                ref={ragArchiveInput}
+                type="file"
+              />
+            </div>
+            <label className="document-sharing-option rag-update-option">
+              <input
+                checked={updateImportedDocuments}
+                disabled={isUploading || ragSyncing !== null}
+                onChange={(event) =>
+                  setUpdateImportedDocuments(event.currentTarget.checked)
+                }
+                type="checkbox"
+              />
+              <span>更新先前匯入的對應文件</span>
+            </label>
+            <p className="rag-sync-hint">
+              備份目前可存取的索引；匯入只會新增或更新同步文件，不會取代其他文件。
+            </p>
+            {ragSyncMessage && (
+              <div
+                aria-live="polite"
+                className={`rag-sync-message rag-sync-${ragSyncMessage.type}`}
+                role={ragSyncMessage.type === "error" ? "alert" : "status"}
+              >
+                {ragSyncMessage.text}
+              </div>
+            )}
             {uploadProgress && (
               <div aria-live="polite" className="upload-progress">
                 <div className="upload-progress-copy">

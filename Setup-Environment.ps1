@@ -14,65 +14,31 @@ if (-not (Test-Path $environmentPath)) {
 $existingLines = [System.IO.File]::ReadAllLines($environmentPath)
 $values = @{}
 foreach ($line in $existingLines) {
-    if ($line -match "^([^#=]+)=(.*)$") {
-        $key = $Matches[1]
-        $value = $Matches[2]
+    $trimmed = $line.Trim()
+    if ([string]::IsNullOrWhiteSpace($trimmed) -or $trimmed.StartsWith("#")) {
+        continue
+    }
+    if ($trimmed -match "^([^=]+?)\s*=\s*(.*)$") {
+        $key = $Matches[1].Trim()
+        $value = $Matches[2].Trim()
         $values[$key] = $value
     }
 }
 
 function Get-PreferredLocalHost {
-    $fixedHost = "10.54.15.175"
-    $preferredHost = $fixedHost
-
-    $ip = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
-        Where-Object {
-            $_.IPAddress -and
-            $_.IPAddress -eq $fixedHost
-        } |
-        Select-Object -First 1 -ExpandProperty IPAddress
-
-    if (-not [string]::IsNullOrWhiteSpace($ip)) {
-        return $ip
-    }
-
-    $primaryIp = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
-        Where-Object {
-            $_.IPAddress -and
-            $_.IPAddress -ne "127.0.0.1" -and
-            $_.IPAddress -notmatch "^169\.254\."
-        } |
-        Select-Object -First 1 -ExpandProperty IPAddress
-
-    if (-not [string]::IsNullOrWhiteSpace($primaryIp)) {
-        return $primaryIp
-    }
-
-    $adapters = @(Get-CimInstance Win32_NetworkAdapterConfiguration -Filter "IPEnabled = 'True'" -ErrorAction SilentlyContinue)
-    foreach ($adapter in $adapters) {
-        foreach ($address in @($adapter.IPAddress)) {
-            if (-not [string]::IsNullOrWhiteSpace($address) -and $address -ne "127.0.0.1" -and $address -notmatch "^169\.254\.") {
-                return $address
-            }
-        }
-    }
-
     return "localhost"
 }
 
 $preferredHost = Get-PreferredLocalHost
 $expectedAdminEmail = "admin@nexux.local"
 $expectedAdminPassword = "ChangeMeNow123!"
-$expectedApiBase = "http://${preferredHost}:8000"
+$expectedApiBase = "http://localhost:8000"
 $originList = @(
     "http://localhost:3000",
     "http://127.0.0.1:3000",
     "http://localhost:8000",
     "http://127.0.0.1:8000"
 )
-if ($preferredHost -ne "localhost") {
-    $originList = @("http://${preferredHost}:3000", "http://${preferredHost}:8000") + $originList
-}
 $originList = @($originList | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object { $_.Trim() } | Select-Object -Unique)
 $expectedOrigins = ($originList -join ",")
 
@@ -89,13 +55,43 @@ if ([string]::IsNullOrWhiteSpace($secret)) {
     $secret = [Convert]::ToBase64String($bytes)
 }
 
+$chatDefaultProvider = $values["CHAT_DEFAULT_PROVIDER"]
+if ([string]::IsNullOrWhiteSpace($chatDefaultProvider)) {
+    $chatDefaultProvider = "openai_compatible"
+}
+
+$ollamaModels = $values["OLLAMA_CHAT_MODELS"]
+if ([string]::IsNullOrWhiteSpace($ollamaModels)) {
+    $ollamaModels = "qwen2.5vl:3b"
+}
+
+$openaiBaseUrl = $values["OPENAI_BASE_URL"]
+if ([string]::IsNullOrWhiteSpace($openaiBaseUrl)) {
+    $openaiBaseUrl = "https://api.openai.com/v1"
+}
+
+$openaiApiKey = $values["OPENAI_API_KEY"]
+if ([string]::IsNullOrWhiteSpace($openaiApiKey)) {
+    $openaiApiKey = ""
+}
+
+$openaiChatModels = $values["OPENAI_CHAT_MODELS"]
+if ([string]::IsNullOrWhiteSpace($openaiChatModels)) {
+    $openaiChatModels = "gemini-3.5-flash-lite"
+}
+
 $sanitized = @(
     "SESSION_SECRET=$secret",
     "ADMIN_EMAIL=$expectedAdminEmail",
     "ADMIN_PASSWORD=$expectedAdminPassword",
     "NEXT_PUBLIC_API_BASE_URL=$expectedApiBase",
     "FRONTEND_ORIGINS=$expectedOrigins",
-    "COOKIE_SECURE=false"
+    "COOKIE_SECURE=false",
+    "CHAT_DEFAULT_PROVIDER=$chatDefaultProvider",
+    "OLLAMA_CHAT_MODELS=$ollamaModels",
+    "OPENAI_BASE_URL=$openaiBaseUrl",
+    "OPENAI_API_KEY=$openaiApiKey",
+    "OPENAI_CHAT_MODELS=$openaiChatModels"
 )
 
 $before = [System.IO.File]::ReadAllText($environmentPath)

@@ -16,26 +16,6 @@ set "STOP_ERROR=0"
 echo NexuX shutdown
 echo.
 
-echo Stopping local frontend if it was started by NexuX...
-tasklist /FI "WINDOWTITLE eq NexuX Frontend" /V /FO CSV | findstr /I /C:"NexuX Frontend" >nul
-if errorlevel 1 (
-    echo No NexuX-launched frontend window found; local frontend may already be closed.
-) else (
-    taskkill /FI "WINDOWTITLE eq NexuX Frontend" /T /F >nul
-    if errorlevel 1 (
-        echo ERROR: Could not stop the NexuX-launched frontend.
-        set "STOP_ERROR=1"
-    ) else (
-        echo NexuX-launched frontend stopped.
-    )
-)
-
-powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$port = 3000; $conns = Get-NetTCPConnection -LocalPort $port -ErrorAction SilentlyContinue; if (-not $conns) { exit 0 }; $matchingPids = @(); foreach ($conn in $conns) { $procId = $conn.OwningProcess; try { $cmd = (Get-CimInstance Win32_Process -Filter \"ProcessId = $procId\").CommandLine; if ($cmd -match 'D:\\Python\\SmartNexuX\\frontend|next\\dist\\server') { $matchingPids += $procId } } catch { } }; foreach ($procId in ($matchingPids | Sort-Object -Unique)) { Stop-Process -Id $procId -Force -ErrorAction SilentlyContinue; Write-Host ('Stopped stale NexuX frontend PID ' + $procId); } exit 0"
-if errorlevel 1 (
-    echo WARNING: Could not stop the local frontend process on port 3000.
-    set "STOP_ERROR=1"
-)
-
 where docker >nul 2>&1
 if errorlevel 1 (
     echo ERROR: Docker is not installed or docker.exe is not on PATH.
@@ -108,4 +88,3 @@ echo NexuX shutdown complete.
 echo ???? 15 ????...
 timeout /t 15 /nobreak
 exit /b 0
-

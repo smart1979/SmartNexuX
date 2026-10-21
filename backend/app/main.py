@@ -7,6 +7,7 @@ import secrets
 import sqlite3
 import tempfile
 import zipfile
+from collections import Counter
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -37,6 +38,7 @@ from app.auth import (
     allowed_frontend_origins,
     get_current_user,
     hash_password,
+    is_allowed_frontend_origin,
     verify_password,
 )
 from app.api_models import (
@@ -296,7 +298,7 @@ app.add_middleware(
 )
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=list(FRONTEND_ORIGINS),
+    allow_origin_regex=r"https?://(localhost|127\.0\.0\.1|0\.0\.0\.0|10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|172\.(1[6-9]|2\d|3[0-1])\.\d+\.\d+)(?::\d+)?$",
     allow_credentials=True,
     allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
     allow_headers=["Content-Type"],
@@ -312,7 +314,7 @@ async def reject_untrusted_browser_origins(
     if (
         request.method in {"POST", "PUT", "PATCH", "DELETE"}
         and origin is not None
-        and origin.rstrip("/") not in FRONTEND_ORIGINS
+        and not is_allowed_frontend_origin(origin, FRONTEND_ORIGINS)
     ):
         return JSONResponse(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -1039,10 +1041,13 @@ def _import_rag_archive(
     store: MilvusStore,
     conversation_store: ConversationStore,
     image_root: Path,
+    update_existing: bool = False,
 ) -> dict[str, int]:
     imported = 0
+    updated = 0
     skipped = 0
-    added: list[tuple[str, str]] = []
+    staged: list[dict[str, Any]] = []
+    committed: list[dict[str, Any]] = []
     try:
         with zipfile.ZipFile(archive_path) as archive:
             archive_size = sum(info.file_size for info in archive.infolist())
@@ -1052,18 +1057,56 @@ def _import_rag_archive(
             _validate_rag_archive(archive, documents, store.embedding_dimension)
             imported_ids = conversation_store.imported_document_ids(owner_id)
             existing_documents = {
-                str(document["document_id"])
+                str(document["document_id"]): document
                 for document in conversation_store.list_documents(owner_id)
             }
+            imported_by_name: dict[str, list[tuple[str, str]]] = {}
+            for source_id, local_id in imported_ids.items():
+                document = existing_documents.get(local_id)
+                if document is not None:
+                    imported_by_name.setdefault(
+                        str(document["source_name"]).casefold(), []
+                    ).append((source_id, local_id))
+            incoming_name_counts = Counter(
+                str(document["source_name"]).casefold() for document in documents
+            )
+            claimed_source_ids: set[str] = set()
 
             for document in documents:
                 source_id = document["source_document_id"]
-                if source_id in imported_ids or source_id in existing_documents:
+                source_name = str(document["source_name"])
+                old_source_id = source_id if source_id in imported_ids else None
+                old_local_id = imported_ids.get(source_id)
+                if (
+                    old_source_id is None
+                    and update_existing
+                    and incoming_name_counts[source_name.casefold()] == 1
+                ):
+                    name_matches = [
+                        imported
+                        for imported in imported_by_name.get(
+                            source_name.casefold(), []
+                        )
+                        if imported[0] not in claimed_source_ids
+                    ]
+                    if len(name_matches) == 1:
+                        old_source_id, old_local_id = name_matches[0]
+
+                if old_source_id is not None and not update_existing:
+                    skipped += 1
+                    continue
+                if old_local_id is None and source_id in existing_documents:
                     skipped += 1
                     continue
 
-                local_id = source_id
-                if conversation_store.document_owner(local_id) is not None:
+                is_update = old_local_id is not None
+                if is_update:
+                    claimed_source_ids.add(str(old_source_id))
+                local_id = str(uuid4()) if is_update else source_id
+                if (
+                    not is_update
+                    and conversation_store.document_owner(local_id) is not None
+                ):
                     local_id = str(uuid4())
 
                 image_directory = image_root / local_id
@@ -1108,15 +1151,6 @@ def _import_rag_archive(
                         raise RuntimeError(
                             f"Milvus did not insert all chunks for {source_id}"
                         )
-                    conversation_store.register_imported_document(
-                        owner_id,
-                        source_id,
-                        local_id,
-                        document["source_name"],
-                        record_count,
-                        document["uploaded_at"],
-                        document["is_shared"],
-                    )
                 except Exception:
                     try:
                         store.delete_document(local_id)
@@ -1129,28 +1163,114 @@ def _import_rag_archive(
                     except OSError:
                         pass
                     raise
-                added.append((source_id, local_id))
-                imported += 1
-    except Exception:
-        for source_id, local_id in reversed(added):
-            try:
-                store.delete_document(local_id)
-                conversation_store.remove_imported_document(
-                    owner_id,
-                    source_id,
-                    local_id,
+                staged.append(
+                    {
+                        "source_id": source_id,
+                        "old_source_id": old_source_id,
+                        "local_id": local_id,
+                        "old_local_id": old_local_id,
+                        "document": document,
+                        "record_count": record_count,
+                    }
                 )
-                document_directory = image_root / local_id
+
+            for item in staged:
+                document = item["document"]
+                if item["old_local_id"] is None:
+                    conversation_store.register_imported_document(
+                        owner_id,
+                        item["source_id"],
+                        item["local_id"],
+                        document["source_name"],
+                        item["record_count"],
+                        document["uploaded_at"],
+                        document["is_shared"],
+                    )
+                    imported += 1
+                else:
+                    old_document = existing_documents[item["old_local_id"]]
+                    conversation_store.replace_imported_document(
+                        owner_id,
+                        item["old_source_id"],
+                        item["source_id"],
+                        item["old_local_id"],
+                        item["local_id"],
+                        document["source_name"],
+                        item["record_count"],
+                        document["uploaded_at"],
+                        document["is_shared"],
+                    )
+                    item["old_document"] = old_document
+                    updated += 1
+                committed.append(item)
+
+    except Exception:
+        for item in reversed(committed):
+            try:
+                if item["old_local_id"] is None:
+                    conversation_store.remove_imported_document(
+                        owner_id,
+                        item["source_id"],
+                        item["local_id"],
+                    )
+                else:
+                    old_document = item["old_document"]
+                    conversation_store.replace_imported_document(
+                        owner_id,
+                        item["source_id"],
+                        item["old_source_id"],
+                        item["local_id"],
+                        item["old_local_id"],
+                        old_document["source_name"],
+                        old_document["chunks_indexed"],
+                        old_document["uploaded_at"],
+                        old_document["is_shared"],
+                    )
+            except Exception:
+                logger.exception(
+                    "Failed to roll back imported RAG document %s",
+                    item["source_id"],
+                )
+        for item in reversed(staged):
+            try:
+                store.delete_document(item["local_id"])
+                document_directory = image_root / item["local_id"]
                 if document_directory.exists():
                     for image_path in document_directory.iterdir():
                         image_path.unlink()
                     document_directory.rmdir()
             except Exception:
                 logger.exception(
-                    "Failed to roll back imported RAG document %s", source_id
+                    "Failed to clean up staged RAG document %s",
+                    item["source_id"],
                 )
         raise
-    return {"imported": imported, "skipped": skipped}
+
+    for item in committed:
+        old_local_id = item["old_local_id"]
+        if old_local_id is None:
+            continue
+        try:
+            deleted_chunks = store.delete_document(old_local_id)
+            expected_chunks = int(item["old_document"]["chunks_indexed"])
+            if deleted_chunks != expected_chunks:
+                raise RuntimeError(
+                    f"Deleted {deleted_chunks} of {expected_chunks} previous chunks"
+                )
+            old_image_directory = image_root / old_local_id
+            if old_image_directory.exists():
+                for image_path in old_image_directory.iterdir():
+                    image_path.unlink()
+                old_image_directory.rmdir()
+        except Exception as exc:
+            logger.exception(
+                "Failed to remove replaced RAG document %s",
+                item["source_id"],
+            )
+            raise RuntimeError(
+                f"Updated document {item['source_id']} but could not clean up its previous index"
+            ) from exc
+    return {"imported": imported, "updated": updated, "skipped": skipped}
 
 
 @app.get("/api/documents/export")
@@ -1204,6 +1324,7 @@ async def export_rag_documents(
 async def import_rag_documents(
     request: Request,
     file: UploadFile = File(...),
+    update_existing: bool = Form(False),
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> dict[str, int]:
     archive_file = tempfile.NamedTemporaryFile(
@@ -1236,6 +1357,7 @@ async def import_rag_documents(
             store,
             conversation_store,
             image_root,
+            update_existing,
         )
     except UploadTooLargeError as exc:
         raise HTTPException(

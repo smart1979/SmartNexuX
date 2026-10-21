@@ -39,6 +39,7 @@
 | GET | `/api/auth/me`、`POST /api/auth/logout` | 查詢目前使用者或清除 session；需有效 session（登出除外） | Phase 4.2 已實作 |
 | GET/POST | `/api/conversations`、`GET/DELETE /api/conversations/{id}` | 使用者專屬對話清單、建立、載入及刪除；需登入 | Phase 4.2 已實作 |
 | GET/POST | `/api/documents` | 使用者專屬文件清單；multipart 上傳、解析、Embedding 寫入 Milvus | Phase 4.2 已實作 |
+| GET/POST | `/api/documents/export`、`/api/documents/import` | 匯出／匯入 RAG 封存；匯入可更新同來源文件並保留其他目的端文件 | Phase 4.2 已實作 |
 | POST | `/api/search` | 登入後以 owner filter 執行語意＋BM25 混合搜尋 | Phase 4.2 已實作 |
 | POST | `/api/agent/run` | 以受控 ReAct 執行已註冊 Skill；支援歷史與使用者文件脈絡 | Phase 4.2 已實作 |
 | GET | `/api/models`、`/api/skills` | 列出已設定模型與註冊 Skills；需登入 | Phase 4.2 已實作 |
@@ -76,6 +77,7 @@
 - `POST /api/conversations` 接受 `{"title":"New conversation"}`（標題可省略）；回傳 `id/title/created_at/updated_at`。`GET /api/conversations` 僅列出目前使用者資料；`GET /api/conversations/{id}` 回傳訊息及 usage/tool calls/attachment IDs；`DELETE` 只刪除本人對話。
 - SQLite 預設路徑 `/data/nexux.sqlite3`，Compose 以 `nexux-data` 命名 Volume 持久化 users（含雜湊後密碼）、conversations、messages 及 documents 索引；現有 users 資料表會在啟動時遷移新增密碼欄位。Milvus 新文件 chunk 的 JSON `metadata.owner_id` 儲存同一使用者 UUID；對話引用／搜尋以該 UUID 限制範圍。過往沒有 owner metadata 的 Milvus 文件不會自動分享或顯示，需由使用者重新上傳才能納入隔離後的工作區。
 - 文件附件先由前端上傳並索引，回傳 document ID 再附加到聊天／Agent 請求；最多 10 個，且 API 驗證每個 ID 的擁有者。聊天和 Agent 均會以使用者文件做 hybrid search，將有限長度的命中結果與最近對話組合為模型脈絡。
+- `GET /api/documents/export` 會將目前帳號可存取的已索引文件、向量、中繼資料及檢索圖片打包成 ZIP；`POST /api/documents/import` 接受 multipart 欄位 `file` 及選填 `update_existing`（預設 `false`）。設為 `true` 時，優先依封存來源 ID 更新先前匯入文件；若 ID 不同，只有封存和目的端各自唯一的同名已同步文件才以檔名（忽略大小寫）配對更新。同名多份不以檔名替換，但來源 ID 相同仍可精確更新。新增其他文件並略過目的端非同步來源的既有文件；回應為 `{"imported":0,"updated":0,"skipped":0}`。更新以新索引準備完成後替換舊資料，保留目的端其他文件。`RAG-Sync.bat` 預設詢問並選擇更新，回答 `N` 可停用更新。
 
 ## Skills 清單
 

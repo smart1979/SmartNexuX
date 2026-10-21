@@ -384,8 +384,20 @@ button:disabled {
   line-height: 1.55;
 }
 
-.session-item {
+.session-list {
+  display: grid;
+  gap: 6px;
+}
+
+.session-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   width: 100%;
+}
+
+.session-item {
+  flex: 1 1 auto;
   min-width: 0;
   gap: 9px;
   height: 34px;
@@ -407,6 +419,25 @@ button:disabled {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.session-delete {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.02);
+  color: #7d8798;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.session-delete:hover {
+  border-color: rgba(255, 136, 136, 0.32);
+  background: rgba(255, 101, 101, 0.1);
+  color: #ff9d9d;
 }
 
 .session-active {
@@ -1426,6 +1457,74 @@ button:disabled {
 
 .document-sharing-option input:disabled {
   cursor: not-allowed;
+}
+
+.rag-sync-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+  margin-top: 12px;
+}
+
+.rag-sync-actions button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-width: 0;
+  min-height: 32px;
+  padding: 6px;
+  border: 1px solid rgba(155, 140, 255, 0.18);
+  border-radius: 8px;
+  background: rgba(132, 117, 219, 0.07);
+  color: #b8addf;
+  font-size: 9px;
+  cursor: pointer;
+  transition: border-color 140ms ease, background 140ms ease, color 140ms ease;
+}
+
+.rag-sync-actions button:hover:not(:disabled) {
+  border-color: rgba(155, 140, 255, 0.4);
+  background: rgba(132, 117, 219, 0.14);
+  color: #e0d9ff;
+}
+
+.rag-sync-actions button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.rag-update-option {
+  margin-top: 10px;
+}
+
+.rag-sync-hint {
+  margin: 7px 3px 0;
+  color: #707c92;
+  font-size: 8px;
+  line-height: 1.5;
+}
+
+.rag-sync-message {
+  margin-top: 9px;
+  padding: 8px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  font-size: 9px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.rag-sync-success {
+  border-color: rgba(94, 200, 164, 0.17);
+  background: rgba(94, 200, 164, 0.06);
+  color: #87d6b8;
+}
+
+.rag-sync-error {
+  border-color: rgba(255, 125, 142, 0.2);
+  background: rgba(255, 125, 142, 0.07);
+  color: #ff9aa9;
 }
 
 .upload-progress {

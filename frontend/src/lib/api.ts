@@ -1,6 +1,17 @@
-export const API_BASE_URL = (
-  process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000"
-).replace(/\/+$/, "");
+export const API_BASE_URL = (() => {
+  if (typeof window !== "undefined") {
+    const currentOrigin = window.location.origin;
+    const currentUrl = new URL(currentOrigin);
+    if (currentUrl.port === "3000" || currentUrl.port === "") {
+      currentUrl.port = "8000";
+      return currentUrl.origin.replace(/\/+$/, "");
+    }
+  }
+
+  return (
+    process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000"
+  ).replace(/\/+$/, "");
+})();
 
 export class ApiError extends Error {
   constructor(
@@ -94,6 +105,12 @@ export interface DocumentSummary {
   chunks_indexed: number;
   uploaded_at: string;
   is_shared: boolean;
+}
+
+export interface RagImportResult {
+  imported: number;
+  updated: number;
+  skipped: number;
 }
 
 export interface KnowledgeSearchHit {
@@ -251,6 +268,39 @@ export function deleteConversation(conversationId: string) {
 
 export function getDocuments() {
   return apiRequest<DocumentSummary[]>("/api/documents");
+}
+
+export async function exportRagArchive(): Promise<Blob> {
+  const response = await fetch(`${API_BASE_URL}/api/documents/export`, {
+    cache: "no-store",
+    credentials: "include",
+  });
+  if (!response.ok) {
+    const payload = (await response.json().catch(() => null)) as {
+      detail?: unknown;
+    } | null;
+    throw new ApiError(
+      typeof payload?.detail === "string"
+        ? payload.detail
+        : `Request failed with HTTP ${response.status}`,
+      response.status,
+    );
+  }
+  const archive = await response.blob();
+  if (archive.size === 0) {
+    throw new Error("The RAG export archive is empty");
+  }
+  return archive;
+}
+
+export function importRagArchive(file: File, updateExisting: boolean) {
+  const form = new FormData();
+  form.set("file", file);
+  form.set("update_existing", String(updateExisting));
+  return apiRequest<RagImportResult>("/api/documents/import", {
+    method: "POST",
+    body: form,
+  });
 }
 
 export function searchKnowledge(query: string, topK = 5) {

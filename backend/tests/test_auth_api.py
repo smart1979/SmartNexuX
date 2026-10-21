@@ -101,6 +101,19 @@ class AuthApiTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(response.status_code, 403)
 
+    async def test_private_ip_origin_is_allowed_for_local_development(self) -> None:
+        response = await self.client.post(
+            "/api/auth/register",
+            headers={"Origin": "http://10.54.15.175:3000"},
+            json={
+                "email": "lan-user@example.com",
+                "display_name": "LAN User",
+                "password": "valid-password",
+            },
+        )
+
+        self.assertEqual(response.status_code, 201)
+
 
 if __name__ == "__main__":
     unittest.main()

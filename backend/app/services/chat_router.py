@@ -76,7 +76,7 @@ class ChatModelRouter:
             "openai_compatible": self._parse_models(
                 external_models
                 if external_models is not None
-                else os.getenv("OPENAI_CHAT_MODELS", "gpt-4o-mini"),
+                else os.getenv("OPENAI_CHAT_MODELS", "gemini-3.5-flash-lite"),
                 "OPENAI_CHAT_MODELS",
                 allow_empty=True,
             ),
@@ -84,7 +84,7 @@ class ChatModelRouter:
         configured_default = (
             default_provider
             if default_provider is not None
-            else os.getenv("CHAT_DEFAULT_PROVIDER", "ollama")
+            else os.getenv("CHAT_DEFAULT_PROVIDER", "openai_compatible")
         )
         if configured_default not in self._models:
             raise ValueError(

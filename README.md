@@ -62,10 +62,12 @@
 - 目前所有帳號的清單
 - 每個使用者的角色與最後在線時間
 - 是否在線上（依最近活動時間判定）
-- 一鍵重設指定使用者的密碼
-- 忘記密碼的 Token 申請與重設流程支援
+- 一鍵重設指定使用者的密碼；系統會產生臨時密碼，並要求使用者下次登入時先更新密碼
+- 忘記密碼的 Token 申請與重設 API
 
-此外，登入與註冊流程已支援 `forgot password` / `reset password`，以便使用者在忘記密碼時可自行驗證並重設密碼，而管理者也能從後台直接重設使用者帳號。
+管理員重設密碼後，請透過安全管道將畫面顯示的臨時密碼交給使用者。使用者以臨時密碼登入後，必須先設定新密碼才能繼續使用工作區。
+
+忘記密碼可透過 `POST /api/auth/forgot-password` 申請重設 Token，再以 `POST /api/auth/reset-password` 提交 Token 與新密碼。這兩個 API 目前不會寄送電子郵件；申請成功時 Token 會直接包含在 API 回應中，效期為一小時且只能使用一次。登入／註冊畫面尚未提供自助重設密碼表單。
 
 ### 預設模型
 
@@ -75,6 +77,16 @@
 | `nomic-embed-text` | 文件向量化與檢索 |
 
 一鍵啟動會在模型尚未下載時呼叫 `ollama pull`。請預留下載時間與磁碟空間。
+
+### 最近更新與目前路由狀態
+
+- 目前聊天預設 provider 已切換為 `openai_compatible`，預設模型為 `gemini-3.5-flash-lite`。
+- Ollama 原本的聊天路徑仍保留，可在設定中切回本機 Ollama 使用；這代表既有本地推論能力不會被移除。
+- 新增了「新對話列表」的刪除紀錄功能：在左側對話清單中可直接刪除既有對話紀錄，並在刪除後即時更新 UI 狀態與可選清單。
+- 目前知識庫（文件加入向量索引）的 embedding 流程仍然走 Ollama，不會直接改用 Gemini；也就是說：聊天與文件索引目前是兩條分開的路由。
+- 這個狀態對應到專案目前的實作：聊天在 `ChatModelRouter` 中以 `CHAT_DEFAULT_PROVIDER=openai_compatible` + `OPENAI_CHAT_MODELS=gemini-3.5-flash-lite` 為主；文件向量化仍由 `OllamaEmbeddingClient` 透過 Ollama `/api/embed` 完成。
+
+這份文件記錄目前實際運作狀態，避免未來在設定、UI 與 RAG 流程間混淆「聊天預設模型」與「知識庫 embedding 模型」的不同路徑。
 
 ## 上傳文件並建立向量索引
 
@@ -110,15 +122,13 @@
 
 ### 在沒有網路的電腦間搬移 RAG
 
-在兩台已安裝並啟動 NexuX 的電腦上，使用專案根目錄的 `RAG-Sync.bat`：
+在 Dashboard 右側「工作區資訊 → 知識庫」下方點選「備份 RAG」，即可下載目前登入帳號可存取的已索引資料 ZIP；在目的端相同位置點選「匯入 ZIP」並選取備份檔，即可匯入。勾選「更新先前匯入的對應文件」會更新已同步文件；不勾選時則略過重複項目。
 
-1. 在來源電腦選「Export」，以來源端 NexuX 帳號登入；工具會在 `RAG-Exports` 建立 ZIP。
-2. 使用 USB 等離線方式將 ZIP 搬到目的電腦。
-3. 在目的電腦選「Import」，以目的端 NexuX 帳號登入並選取 ZIP。
+若要在離線電腦間搬移，先在來源端點選「備份 RAG」，使用 USB 等離線方式將 ZIP 搬到目的電腦，再於公司端點選「匯入 ZIP」。兩台 NexuX 不必彼此互通；目的端須先啟動 NexuX。此 Dashboard 功能會使用目前登入帳號，若在遠端公司主機操作，也不必另行輸入 API URL。命令列 `RAG-Sync.bat` 仍可供自動化或疑難排解時使用。
 
-匯入會合併至目前登入帳號的知識庫；已存在的文件會略過，因此重複匯入同一份資料不會建立重複文件。這會搬移已索引的文字片段、向量、文件資訊及檢索圖片，不包含原始上傳檔、帳號或聊天紀錄；來源上傳的原始檔案並未永久保留。兩台電腦應使用相同的 embedding 模型與向量維度。ZIP 含文件內容，請妥善保管並只傳給授權使用者。
+匯入預設會合併至目前登入帳號的知識庫：新增文件、更新先前同步的對應文件，並略過目的端既有但非此同步來源的文件。系統先依來源文件 ID 配對；來源重新上傳而產生新 ID 時，只有當封存與目的端各自都只有一份同名的已同步文件，才會以檔名配對更新（忽略大小寫）。僅以檔名配對時，同名多份會新增，不會猜測替換對象；來源 ID 完全相同仍可精確更新。`RAG-Sync.bat` 匯入時可選擇是否更新；選「N」則採用只新增、略過重複文件的模式。匯入不會覆蓋其他文件。這會搬移已索引的文字片段、向量、文件資訊及檢索圖片，不包含原始上傳檔、帳號或聊天紀錄；來源上傳的原始檔案並未永久保存。兩台電腦應使用相同的 embedding 模型與向量維度。ZIP 含文件內容，請妥善保管並只傳給授權使用者。
 
-匯出的共用文件匯入後會維持共用；私人文件維持私人。共用範圍是「同一台 NexuX 上所有已登入帳號」，不會讓未登入者或其他 NexuX 主機直接存取。
+匯出的共用文件匯入後會維持共用；私人文件維持私人。若公司端其他登入帳號也需要使用，請確保來源文件是共用狀態，並在目的端以有權管理該知識資料的帳號匯入。共用範圍是「同一台 NexuX 上所有已登入帳號」，不會讓未登入者或其他 NexuX 主機直接存取。若來源端或目的端更新過程式，請先使用新版 `Start-NexuX.bat` 重新建置／啟動，再執行同步；封存會在匯出後驗證 ZIP 格式、文件數及索引片段數，匯入前也會再次檢查封存結構。
 
 若上傳失敗，先確認 Ollama 正在執行，且 `ollama list` 有 `qwen2.5vl:3b` 和 `nomic-embed-text`；再查看 `docker compose logs --tail 100 api`。不支援格式回 HTTP 415，檔案超過 100 MB 回 HTTP 413，解析失敗回 HTTP 422，Ollama 或 Milvus 無法使用回 HTTP 503。
 
@@ -146,20 +156,25 @@ PPTX／PDF 中個別圖片的 OCR 若遇到 `invalid image input` 或 `token rep
 |---|---|---|
 | `POST` | `/api/auth/register` | 建立帳號並登入 |
 | `POST` | `/api/auth/login` | 登入 |
+| `POST` | `/api/auth/change-password` | 驗證目前密碼後更新密碼 |
+| `POST` | `/api/auth/forgot-password` | 申請密碼重設 Token（目前由 API 回傳，不寄送電子郵件） |
+| `POST` | `/api/auth/reset-password` | 使用有效的重設 Token 設定新密碼 |
 | `GET` | `/api/auth/me` | 取得目前登入使用者 |
 | `POST` | `/api/auth/logout` | 登出 |
+| `GET` | `/api/admin/users` | 列出帳號、角色、在線狀態及最後在線時間（Admin 限定） |
+| `POST` | `/api/admin/users/{user_id}/reset-password` | 重設指定帳號密碼並要求下次登入時更新（Admin 限定） |
 | `GET`, `POST` | `/api/conversations` | 列出或建立對話 |
 | `GET`, `DELETE` | `/api/conversations/{id}` | 載入或刪除自己的對話 |
 | `GET`, `POST` | `/api/documents` | 列出目前帳號可存取的文件（自己的私人文件及共用文件），或上傳文件；上傳可帶 `is_shared=true` |
 | `GET` | `/api/documents/export` | 匯出目前登入者的 RAG 封存 |
-| `POST` | `/api/documents/import` | 匯入並合併 RAG 封存 |
+| `POST` | `/api/documents/import` | 合併 RAG 封存；可用 `update_existing=true` 更新同來源匯入的文件 |
 | `GET` | `/api/documents/{id}/images/{image_id}` | 讀取自己文件中的索引圖片 |
 | `POST` | `/api/search` | 搜尋自己的私人文件及共用知識庫 |
 | `POST` | `/api/chat/stream` | 以 SSE 串流聊天 |
 | `POST` | `/api/agent/run` | 執行 Agent |
 | `GET` | `/api/models`, `/api/skills` | 列出模型與已註冊 Skills |
 
-除註冊、登入與登出外，工作區 API 需要有效的登入 session。
+除註冊、登入、登出及忘記／重設密碼 API 外，工作區 API 需要有效的登入 session。管理 API 另需 Admin 角色。
 
 ## 設定
 
@@ -167,9 +182,9 @@ PPTX／PDF 中個別圖片的 OCR 若遇到 `invalid image input` 或 `token rep
 
 若要調整設定，請編輯本機 `.env`，例如：
 
-- `CHAT_DEFAULT_PROVIDER`：預設聊天服務，預設為 `ollama`。
+- `CHAT_DEFAULT_PROVIDER`：預設聊天服務，預設為 `openai_compatible`；若要切回原本的本機 Ollama，將它設定為 `ollama` 即可。
 - `OLLAMA_CHAT_MODELS`：允許使用的 Ollama 聊天模型。
-- `OPENAI_BASE_URL`、`OPENAI_API_KEY`、`OPENAI_CHAT_MODELS`：選用的 OpenAI 相容服務設定。
+- `OPENAI_BASE_URL`、`OPENAI_API_KEY`、`OPENAI_CHAT_MODELS`：選用的 OpenAI 相容服務設定；目前預設模型為 `gemini-3.5-flash-lite`，可在 `.env` 中改成你實際要使用的名稱。
 - `SESSION_SECRET`：簽署登入 session 的秘密金鑰；請保留在本機，不要分享或提交。
 - `COOKIE_SECURE`：本機 HTTP 開發為 `false`；使用 HTTPS 部署時必須設為 `true`。
 
@@ -181,7 +196,7 @@ PPTX／PDF 中個別圖片的 OCR 若遇到 `invalid image input` 或 `token rep
 - 專案原始碼資料夾不包含 Docker Volume。移轉到另一台電腦時，預設會建立新的工作區；要搬移既有帳號與內容，需另外備份及還原 Docker Volume。
 - `.env` 含有 session 簽署金鑰，遺失或變更後，既有登入 session 將失效。
 - 專案預設為本機開發環境；MinIO 範例帳密、HTTP Cookie 與服務設定不可直接作為對外正式部署設定。
-- 本機帳號功能目前沒有 email 驗證、密碼重設或登入節流；請勿將未加強的開發部署公開到不可信任網路。
+- 本機帳號目前沒有 email 驗證、密碼重設郵件寄送或登入節流。忘記密碼 API 會將 Token 直接回傳給呼叫端，不應當作已驗證的電子郵件重設流程；請勿將未加強的開發部署公開到不可信任網路。
 
 ## 開發與測試
 

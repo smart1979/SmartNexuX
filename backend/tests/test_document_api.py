@@ -375,6 +375,30 @@ class DocumentApiTests(unittest.IsolatedAsyncioTestCase):
         destination_image_dir = (
             Path(self.temporary_directory.name) / "destination-images"
         )
+        unrelated_document_id = str(uuid4())
+        destination_store.register_document(
+            destination_id,
+            unrelated_document_id,
+            "keep.txt",
+            1,
+        )
+        destination_milvus.insert_chunks(
+            [
+                {
+                    "id": f"{unrelated_document_id}:0",
+                    "document_id": unrelated_document_id,
+                    "chunk_index": 0,
+                    "content": "Unrelated destination content",
+                    "embedding": [0.4, 0.3, 0.2, 0.1],
+                    "metadata": {
+                        "owner_id": destination_id,
+                        "visibility": "private",
+                        "source_name": "keep.txt",
+                        "image_asset_ids": [],
+                    },
+                }
+            ]
+        )
         app.state.conversation_store = destination_store
         app.state.milvus_store = destination_milvus
         app.state.document_image_dir = destination_image_dir
@@ -397,11 +421,19 @@ class DocumentApiTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(import_response.status_code, 200, import_response.text)
-        self.assertEqual(import_response.json(), {"imported": 1, "skipped": 0})
+        self.assertEqual(
+            import_response.json(),
+            {"imported": 1, "updated": 0, "skipped": 0},
+        )
         destination_documents = destination_store.list_documents(destination_id)
-        self.assertEqual(len(destination_documents), 1)
-        self.assertTrue(destination_documents[0]["is_shared"])
-        destination_document_id = str(destination_documents[0]["document_id"])
+        self.assertEqual(len(destination_documents), 2)
+        imported_document = next(
+            document
+            for document in destination_documents
+            if str(document["document_id"]) == document_id
+        )
+        self.assertTrue(imported_document["is_shared"])
+        destination_document_id = str(imported_document["document_id"])
         self.assertEqual(destination_document_id, document_id)
         self.assertEqual(
             destination_store.imported_document_ids(destination_id)[document_id],
@@ -432,11 +464,97 @@ class DocumentApiTests(unittest.IsolatedAsyncioTestCase):
             },
         )
         self.assertEqual(repeated_import.status_code, 200, repeated_import.text)
-        self.assertEqual(repeated_import.json(), {"imported": 0, "skipped": 1})
+        self.assertEqual(
+            repeated_import.json(),
+            {"imported": 0, "updated": 0, "skipped": 1},
+        )
         self.assertEqual(
             len(destination_store.list_documents(destination_id)),
-            1,
+            2,
         )
+
+        updated_archive = BytesIO()
+        updated_source_id = str(uuid4())
+        with zipfile.ZipFile(BytesIO(export_response.content)) as source_archive:
+            with zipfile.ZipFile(updated_archive, mode="w") as updated_zip:
+                for name in source_archive.namelist():
+                    content = source_archive.read(name)
+                    output_name = name
+                    if name == "manifest.json":
+                        manifest = json.loads(content)
+                        manifest["documents"][0][
+                            "source_document_id"
+                        ] = updated_source_id
+                        manifest["documents"][0][
+                            "chunks_path"
+                        ] = f"chunks/{updated_source_id}.jsonl"
+                        content = json.dumps(
+                            manifest,
+                            separators=(",", ":"),
+                        ).encode()
+                    elif name == f"chunks/{document_id}.jsonl":
+                        chunk = json.loads(content.splitlines()[0])
+                        chunk["content"] = "Updated indexed content"
+                        content = (
+                            json.dumps(chunk, separators=(",", ":")).encode()
+                            + b"\n"
+                        )
+                        output_name = f"chunks/{updated_source_id}.jsonl"
+                    elif name.startswith(f"images/{document_id}/"):
+                        output_name = name.replace(
+                            f"images/{document_id}/",
+                            f"images/{updated_source_id}/",
+                            1,
+                        )
+                    updated_zip.writestr(output_name, content)
+
+        update_response = await self.client.post(
+            "/api/documents/import",
+            data={"update_existing": "true"},
+            files={
+                "file": (
+                    "RAG-updated.zip",
+                    updated_archive.getvalue(),
+                    "application/zip",
+                )
+            },
+        )
+        self.assertEqual(update_response.status_code, 200, update_response.text)
+        self.assertEqual(
+            update_response.json(),
+            {"imported": 0, "updated": 1, "skipped": 0},
+        )
+        updated_documents = destination_store.list_documents(destination_id)
+        self.assertEqual(len(updated_documents), 2)
+        imported_document_ids = destination_store.imported_document_ids(
+            destination_id
+        )
+        self.assertNotIn(document_id, imported_document_ids)
+        updated_document_id = imported_document_ids[updated_source_id]
+        self.assertNotEqual(updated_document_id, destination_document_id)
+        self.assertTrue(
+            any(
+                str(document["document_id"]) == unrelated_document_id
+                for document in updated_documents
+            )
+        )
+        self.assertFalse(
+            any(
+                record["document_id"] == destination_document_id
+                for record in destination_milvus.records
+            )
+        )
+        self.assertTrue(
+            any(
+                record["document_id"] == updated_document_id
+                and record["content"] == "Updated indexed content"
+                for record in destination_milvus.records
+            )
+        )
+        image_response = await self.client.get(
+            f"/api/documents/{updated_document_id}/images/{image_id}"
+        )
+        self.assertEqual(image_response.status_code, 200)
 
 
 if __name__ == "__main__":
